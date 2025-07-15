@@ -932,10 +932,11 @@ private:
             solve_const_H_time = 0;
             svd_time   = 0;
             t0 = omp_get_wtime();
-            // 点云去畸变
-            // 去畸变后的点云feats_undistort
+            // 对IMU数据进行预处理，其中包含了点云畸变处理 前向传播 反向传播
+            // feats_undistort是去畸变后的点云
             p_imu->Process(Measures, kf, feats_undistort);
             state_point = kf.get_x();
+            // IMU坐标系下的激光雷达位置转换到世界坐标系下的激光雷达位置
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
 
             if (feats_undistort->empty() || (feats_undistort == NULL))

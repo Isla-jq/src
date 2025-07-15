@@ -51,6 +51,7 @@ void Preprocess::process(const livox_ros_driver2::msg::CustomMsg::UniquePtr &msg
 }
 
 // 对输入的 Livox 点云消息进行预处理，并将结果保存至以下成员变量：
+// 将每条线上的每个点，分为下面几种
 // - pl_surf: 平面点（表面点），可用于提取平面特征
 // - pl_corn: 边缘点（角点），可用于提取边缘特征
 // - pl_full: 处理后保留的所有原始点，用作中间数据
@@ -153,6 +154,8 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg::UniquePtr
       {
         // 有效的点云数
         valid_num++;
+        // 等间隔降采样
+        // point_filter_num：降采样间隔，例如设为5就表示每5个点保留1个
         if (valid_num % point_filter_num == 0)
         {
           pl_full[i].x = msg->points[i].x;
@@ -161,7 +164,8 @@ void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg::UniquePtr
           pl_full[i].intensity = msg->points[i].reflectivity;
           pl_full[i].curvature = msg->points[i].offset_time /
                                  float(1000000);  // use curvature as time of each laser points, curvature unit: ms
-
+          // 只有当当前点和上一点的间距足够大（>1e-7），并且在最小距离阈值之外，
+          // 才将当前点认为是有用的点，加入到pl_surf队列中
           if ((abs(pl_full[i].x - pl_full[i - 1].x) > 1e-7)
               || (abs(pl_full[i].y - pl_full[i - 1].y) > 1e-7)
               || (abs(pl_full[i].z - pl_full[i - 1].z) > 1e-7)
@@ -191,7 +195,7 @@ void Preprocess::give_feature(pcl::PointCloud<PointType>& pl, vector<orgtype>& t
     return;
   }
   uint head = 0;
-
+  // 不能在盲区 从这条线非盲区的点开始
   while (types[head].range < blind)
   {
     head++;
@@ -206,9 +210,10 @@ void Preprocess::give_feature(pcl::PointCloud<PointType>& pl, vector<orgtype>& t
   uint i_nex = 0, i2;
   uint last_i = 0;
   uint last_i_nex = 0;
+  // 为1代表上个状态为平面 否则为0
   int last_state = 0;
   int plane_type;
-
+  // 判断面点
   for (uint i = head; i < plsize2; i++)
   {
     if (types[i].range < blind)
