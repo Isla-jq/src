@@ -1,4 +1,3 @@
-// #include <ros/ros.h>
 #include <rclcpp/rclcpp.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -26,16 +25,18 @@ enum TIME_UNIT
   US = 2,
   NS = 3
 };
+// 点云特征类型，用于标注每个点的几何属性（由距离变化、曲率等推断）
 enum Feature
 {
-  Nor,
-  Poss_Plane,
-  Real_Plane,
-  Edge_Jump,
-  Edge_Plane,
-  Wire,
-  ZeroPoint
+  Nor,         // 普通点（Normal），不具备明显特征，可能是平坦区域的一部分
+  Poss_Plane,  // 可能是平面（Possible Plane），曲率较小但还需进一步确认
+  Real_Plane,  // 确认的平面点（Real Plane），用于面特征提取和匹配
+  Edge_Jump,   // 跳边缘（Edge Jump），两个点距离突变，可能是遮挡或边缘断裂
+  Edge_Plane,  // 平滑边缘（Edge Plane），沿着曲率连续变化的边界
+  Wire,        // 线状结构（Wire），如电线、杆子等细长物体上的点
+  ZeroPoint    // 空点（Zero Point），可能为无效点或测量失败（距离为0）
 };
+
 enum Surround
 {
   Prev,
@@ -52,7 +53,9 @@ enum E_jump
 
 struct orgtype
 {
+  // 与激光雷达之间的xy的欧几里得距离
   double range;
+  // 相邻两个点之间的xyz欧几里得距离
   double dista;
   double angle[2];
   double intersect;
@@ -160,7 +163,6 @@ class Preprocess
   ~Preprocess();
   
   void process(const livox_ros_driver2::msg::CustomMsg::UniquePtr &msg, PointCloudXYZI::Ptr &pcl_out);
-  void process(const sensor_msgs::msg::PointCloud2::UniquePtr &msg, PointCloudXYZI::Ptr &pcl_out);
   void set(bool feat_en, int lid_type, double bld, int pfilt_num);
 
   // sensor_msgs::PointCloud2::ConstPtr pointcloud;
@@ -174,6 +176,7 @@ class Preprocess
   // ros::Publisher pub_full, pub_surf, pub_corn;
 
 private:
+  void avia_handler(const livox_ros_driver2::msg::CustomMsg::UniquePtr &msg);
   void give_feature(PointCloudXYZI &pl, vector<orgtype> &types);
   void pub_func(PointCloudXYZI &pl, const rclcpp::Time &ct);
   int  plane_judge(const PointCloudXYZI &pl, vector<orgtype> &types, uint i, uint &i_nex, Eigen::Vector3d &curr_direct);

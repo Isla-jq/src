@@ -44,31 +44,143 @@ void Preprocess::set(bool feat_en, int lid_type, double bld, int pfilt_num)
   blind = bld;
   point_filter_num = pfilt_num;
 }
-
-void Preprocess::process(const sensor_msgs::msg::PointCloud2::UniquePtr &msg, PointCloudXYZI::Ptr& pcl_out)
+void Preprocess::process(const livox_ros_driver2::msg::CustomMsg::UniquePtr &msg, PointCloudXYZI::Ptr& pcl_out)
 {
-  switch (time_unit)
-  {
-    case SEC:
-      time_unit_scale = 1.e3f;
-      break;
-    case MS:
-      time_unit_scale = 1.f;
-      break;
-    case US:
-      time_unit_scale = 1.e-3f;
-      break;
-    case NS:
-      time_unit_scale = 1.e-6f;
-      break;
-    default:
-      time_unit_scale = 1.f;
-      break;
-  }
-
+  avia_handler(msg);
   *pcl_out = pl_surf;
 }
 
+// 对输入的 Livox 点云消息进行预处理，并将结果保存至以下成员变量：
+// - pl_surf: 平面点（表面点），可用于提取平面特征
+// - pl_corn: 边缘点（角点），可用于提取边缘特征
+// - pl_full: 处理后保留的所有原始点，用作中间数据
+// Livox 激光雷达
+void Preprocess::avia_handler(const livox_ros_driver2::msg::CustomMsg::UniquePtr &msg)
+{
+  pl_surf.clear();
+  pl_corn.clear();
+  pl_full.clear();
+  double t1 = omp_get_wtime();
+  int plsize = msg->point_num;
+  // cout<<"plsie: "<<plsize<<endl;
+
+  pl_corn.reserve(plsize);
+  pl_surf.reserve(plsize);
+  pl_full.resize(plsize);
+
+  for (int i = 0; i < N_SCANS; i++)
+  {
+    pl_buff[i].clear();
+    pl_buff[i].reserve(plsize);
+  }
+  uint valid_num = 0;
+
+  if (feature_enabled)
+  {
+    for (uint i = 1; i < plsize; i++)
+    {
+      // 激光线编号与类型
+      // N_SCANS=6,可粗略认为6线雷达，但实际不是
+      if ((msg->points[i].line < N_SCANS) &&
+          ((msg->points[i].tag & 0x30) == 0x10 || (msg->points[i].tag & 0x30) == 0x00))
+      {
+        pl_full[i].x = msg->points[i].x;
+        pl_full[i].y = msg->points[i].y;
+        pl_full[i].z = msg->points[i].z;
+        pl_full[i].intensity = msg->points[i].reflectivity;
+        pl_full[i].curvature =
+            msg->points[i].offset_time / float(1000000);  // use curvature as time of each laser points
+
+        bool is_new = false;
+        // 剔除重复点
+        if ((abs(pl_full[i].x - pl_full[i - 1].x) > 1e-7) || (abs(pl_full[i].y - pl_full[i - 1].y) > 1e-7) ||
+            (abs(pl_full[i].z - pl_full[i - 1].z) > 1e-7))
+        {
+          pl_buff[msg->points[i].line].push_back(pl_full[i]);
+        }
+      }
+    }
+    static int count = 0;
+    static double time = 0.0;
+    count++;
+    double t0 = omp_get_wtime();
+    // 对每个line中的激光雷达分别进行处理
+    // N_SCANS的点在局部形成短弧线，类似于微分
+    // N_SCANS=6,可粗略认为6线雷达，但实际不是
+    for (int j = 0; j < N_SCANS; j++)
+    {
+      // 如果该line中的点云过小，则继续处理下一条line
+      if (pl_buff[j].size() <= 5)
+        continue;
+      // pl_buff最大为128，但实际只用到N_SCANS（0-5）
+      pcl::PointCloud<PointType>& pl = pl_buff[j];
+      // plsize为点的个数
+      plsize = pl.size();
+      // typess存放每个点的类型，
+      // typess 是一个一维数组，长度为 128
+      // 组中的每个元素是一个可变长的 vector
+      vector<orgtype>& types = typess[j];
+      types.clear();
+      types.resize(plsize);
+      plsize--;
+      for (uint i = 0; i < plsize; i++)
+      {
+        // 与激光雷达之间的xy的欧几里得距离
+        types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y);
+        vx = pl[i].x - pl[i + 1].x;
+        vy = pl[i].y - pl[i + 1].y;
+        vz = pl[i].z - pl[i + 1].z;
+        // 相邻两个点之间的欧几里得距离
+        types[i].dista = sqrt(vx * vx + vy * vy + vz * vz);
+      }
+      // 因为i最后一个点没有i+1了所以就单独求了一个range，没有dista
+      types[plsize].range = sqrt(pl[plsize].x * pl[plsize].x + pl[plsize].y * pl[plsize].y);
+      // 获取每个点的特征，普通点，可能平面点，平面点，突变点，平滑边缘，线，空点
+      give_feature(pl, types);
+      // pl_surf += pl;
+    }
+    time += omp_get_wtime() - t0;
+    printf("Feature extraction time: %lf \n", time / count);
+  }
+  else
+  {
+    // 分别对每个点云进行处理
+    for (uint i = 1; i < plsize; i++)
+    {
+      // 只取线数在0~N_SCANS内并且回波次序为0或者1的点云
+      if ((msg->points[i].line < N_SCANS) &&
+          ((msg->points[i].tag & 0x30) == 0x10 || (msg->points[i].tag & 0x30) == 0x00))
+      {
+        // 有效的点云数
+        valid_num++;
+        if (valid_num % point_filter_num == 0)
+        {
+          pl_full[i].x = msg->points[i].x;
+          pl_full[i].y = msg->points[i].y;
+          pl_full[i].z = msg->points[i].z;
+          pl_full[i].intensity = msg->points[i].reflectivity;
+          pl_full[i].curvature = msg->points[i].offset_time /
+                                 float(1000000);  // use curvature as time of each laser points, curvature unit: ms
+
+          if ((abs(pl_full[i].x - pl_full[i - 1].x) > 1e-7)
+              || (abs(pl_full[i].y - pl_full[i - 1].y) > 1e-7)
+              || (abs(pl_full[i].z - pl_full[i - 1].z) > 1e-7)
+              && (pl_full[i].x * pl_full[i].x + pl_full[i].y * pl_full[i].y + pl_full[i].z * pl_full[i].z > (blind * blind)))
+          {
+            pl_surf.push_back(pl_full[i]);
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * @brief 对于每条line的点云提取特征
+ * 
+ * @param pl  pcl格式的点云 输入进来一条扫描线上的点
+ * @param types  点云的其他属性
+ */
 void Preprocess::give_feature(pcl::PointCloud<PointType>& pl, vector<orgtype>& types)
 {
   int plsize = pl.size();
@@ -107,7 +219,7 @@ void Preprocess::give_feature(pcl::PointCloud<PointType>& pl, vector<orgtype>& t
     i2 = i;
 
     plane_type = plane_judge(pl, types, i, i_nex, curr_direct);
-
+    // 有效平面
     if (plane_type == 1)
     {
       for (uint j = i; j <= i_nex; j++)
@@ -132,6 +244,7 @@ void Preprocess::give_feature(pcl::PointCloud<PointType>& pl, vector<orgtype>& t
         }
         else
         {
+          // 可能平面
           types[i].ftype = Real_Plane;
         }
       }
@@ -349,6 +462,10 @@ void Preprocess::pub_func(PointCloudXYZI& pl, const rclcpp::Time& ct)
   output.header.stamp = ct;
 }
 
+// 该函数用于判断从当前点 i_cur 开始的点云区间是否属于一个平面特征，并计算该平面的法向量 curr_direct。返回值为：
+// 0：非平面
+// 1：有效平面
+// 2：盲区内的无效点
 int Preprocess::plane_judge(const PointCloudXYZI& pl, vector<orgtype>& types, uint i_cur, uint& i_nex,
                             Eigen::Vector3d& curr_direct)
 {
@@ -464,18 +581,22 @@ int Preprocess::plane_judge(const PointCloudXYZI& pl, vector<orgtype>& types, ui
   curr_direct.normalize();
   return 1;
 }
-
+// 是否为边缘点
 bool Preprocess::edge_jump_judge(const PointCloudXYZI& pl, vector<orgtype>& types, uint i, Surround nor_dir)
 {
+  // prev
   if (nor_dir == 0)
   {
+    // 前两个点到雷达距离小于盲区
     if (types[i - 1].range < blind || types[i - 2].range < blind)
     {
       return false;
     }
   }
+  // next
   else if (nor_dir == 1)
   {
+    // 后两个点到雷达距离小于盲区
     if (types[i + 1].range < blind || types[i + 2].range < blind)
     {
       return false;
