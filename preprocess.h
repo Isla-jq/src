@@ -174,8 +174,6 @@ class Preprocess
   // ros::Publisher pub_full, pub_surf, pub_corn;
 
 private:
-  void mid360_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &msg);
-  void default_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &msg);
   void give_feature(PointCloudXYZI &pl, vector<orgtype> &types);
   void pub_func(PointCloudXYZI &pl, const rclcpp::Time &ct);
   int  plane_judge(const PointCloudXYZI &pl, vector<orgtype> &types, uint i, uint &i_nex, Eigen::Vector3d &curr_direct);
